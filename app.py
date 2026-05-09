@@ -8,7 +8,7 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-DATASET_FILE = "dataset.csv"
+DATASET_FILE = "datasetta.csv"
 
 # =========================
 # SIMPAN DATA SENSOR
