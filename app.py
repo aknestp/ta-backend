@@ -31,6 +31,9 @@ def create_tables():
 
     with engine.connect() as conn:
 
+        # =========================
+        # SENSOR DATA
+        # =========================
         conn.exec_driver_sql("""
         CREATE TABLE IF NOT EXISTS sensor_data (
             id SERIAL PRIMARY KEY,
@@ -40,12 +43,17 @@ def create_tables():
         );
         """)
 
+        # =========================
+        # RIWAYAT DISTRIBUSI
+        # =========================
         conn.exec_driver_sql("""
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE IF NOT EXISTS distribution_history (
             id SERIAL PRIMARY KEY,
-            nama VARCHAR(100),
-            nomor_wa VARCHAR(20),
-            jalur VARCHAR(50)
+            tanggal DATE,
+            jam_mulai VARCHAR(20),
+            jam_selesai VARCHAR(20),
+            durasi VARCHAR(50),
+            status VARCHAR(20)
         );
         """)
 
