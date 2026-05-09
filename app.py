@@ -1,125 +1,379 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from sqlalchemy import create_engine
 import pandas as pd
-import numpy as np
-from datetime import datetime
+import requests
 import os
+from datetime import datetime
 
+# ======================================
+# FLASK CONFIG
+# ======================================
 app = Flask(__name__)
 CORS(app)
 
-DATASET_FILE = "datasetta.csv"
+# ======================================
+# DATABASE CONFIG
+# ======================================
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# =========================
+engine = create_engine(DATABASE_URL)
+
+# ======================================
+# FONNTE WHATSAPP CONFIG
+# ======================================
+FONNTE_TOKEN = os.getenv("FONNTE_TOKEN")
+
+# ======================================
+# CREATE TABLE IF NOT EXISTS
+# ======================================
+def create_tables():
+
+    with engine.connect() as conn:
+
+        conn.exec_driver_sql("""
+        CREATE TABLE IF NOT EXISTS sensor_data (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP,
+            rms FLOAT,
+            status INTEGER
+        );
+        """)
+
+        conn.exec_driver_sql("""
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            nama VARCHAR(100),
+            nomor_wa VARCHAR(20),
+            jalur VARCHAR(50)
+        );
+        """)
+
+create_tables()
+
+# ======================================
+# SEND WHATSAPP
+# ======================================
+def kirim_whatsapp(nomor, pesan):
+
+    try:
+
+        response = requests.post(
+            "https://api.fonnte.com/send",
+            headers={
+                "Authorization": FONNTE_TOKEN
+            },
+            data={
+                "target": nomor,
+                "message": pesan
+            }
+        )
+
+        return response.status_code
+
+    except Exception as e:
+        print("ERROR WHATSAPP:", e)
+        return 500
+
+# ======================================
+# STATUS SEBELUMNYA
+# ======================================
+def get_last_status():
+
+    try:
+
+        query = """
+        SELECT status
+        FROM sensor_data
+        ORDER BY id DESC
+        LIMIT 1
+        """
+
+        df = pd.read_sql(query, engine)
+
+        if len(df) == 0:
+            return 0
+
+        return int(df.iloc[0]["status"])
+
+    except:
+        return 0
+
+# ======================================
 # SIMPAN DATA SENSOR
-# =========================
+# ======================================
 @app.route('/dataset', methods=['POST'])
 def dataset():
 
-    data = request.json
+    try:
 
-    rms = data.get("rms", 0)
-    status = data.get("status", 0)
+        data = request.json
 
-    now = datetime.now()
+        rms = float(data.get("rms", 0))
+        status = int(data.get("status", 0))
 
-    row = {
-        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "rms": rms,
-        "status": status
-    }
+        timestamp = datetime.now()
 
-    df = pd.DataFrame([row])
+        last_status = get_last_status()
 
-    if not os.path.exists(DATASET_FILE):
-        df.to_csv(DATASET_FILE, index=False)
-    else:
-        df.to_csv(DATASET_FILE, mode='a', header=False, index=False)
+        # =========================
+        # SIMPAN KE DATABASE
+        # =========================
+        df = pd.DataFrame([{
+            "timestamp": timestamp,
+            "rms": rms,
+            "status": status
+        }])
 
-    return jsonify({
-        "message": "data tersimpan"
-    })
+        df.to_sql(
+            "sensor_data",
+            engine,
+            if_exists="append",
+            index=False
+        )
 
-# =========================
-# STATUS TERBARU
-# =========================
+        # =========================
+        # EARLY WARNING
+        # =========================
+        if status == 1 and last_status == 0:
+
+            users = pd.read_sql(
+                "SELECT * FROM users",
+                engine
+            )
+
+            pesan = f"""
+🚰 INFORMASI DISTRIBUSI AIR
+
+Air mulai mengalir
+Hari: {timestamp.strftime('%A')}
+Pukul: {timestamp.strftime('%H:%M:%S')} WIB
+
+Pantau dashboard:
+https://ta-dashboard-production.up.railway.app
+"""
+
+            for _, user in users.iterrows():
+
+                nomor = user["nomor_wa"]
+
+                kirim_whatsapp(
+                    nomor,
+                    pesan
+                )
+
+        return jsonify({
+            "message": "data tersimpan"
+        })
+
+    except Exception as e:
+
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+# ======================================
+# DATA STATUS TERBARU
+# ======================================
 @app.route('/latest')
 def latest():
 
     try:
-        df = pd.read_csv(DATASET_FILE)
 
-        latest = df.iloc[-1]
+        query = """
+        SELECT *
+        FROM sensor_data
+        ORDER BY id DESC
+        LIMIT 1
+        """
+
+        df = pd.read_sql(query, engine)
+
+        if len(df) == 0:
+
+            return jsonify({
+                "status": 0,
+                "time": "-",
+                "last_water_time": "-",
+                "duration": "-"
+            })
+
+        latest = df.iloc[0]
 
         return jsonify({
             "status": int(latest["status"]),
-            "time": latest["timestamp"],
-            "last_water_time": latest["timestamp"],
-            "duration": "1 Jam"
+            "time": str(latest["timestamp"]),
+            "last_water_time": str(latest["timestamp"]),
+            "duration": "Aktif"
         })
 
-    except:
+    except Exception as e:
+
         return jsonify({
-            "status": 0,
-            "time": "-",
-            "last_water_time": "-",
-            "duration": "-"
-        })
+            "error": str(e)
+        }), 500
 
-# =========================
-# DATA GRAFIK
-# =========================
+# ======================================
+# DATA GRAFIK RMS
+# ======================================
 @app.route('/chart')
 def chart():
 
     try:
-        df = pd.read_csv(DATASET_FILE)
 
-        chart = df.tail(50)
+        query = """
+        SELECT *
+        FROM sensor_data
+        ORDER BY id DESC
+        LIMIT 50
+        """
+
+        df = pd.read_sql(query, engine)
+
+        df = df.sort_values("id")
 
         return jsonify(
-            chart.to_dict(orient='records')
+            df.to_dict(orient='records')
         )
 
-    except:
-        return jsonify([])
+    except Exception as e:
 
-# =========================
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+# ======================================
 # RIWAYAT DISTRIBUSI
-# =========================
+# ======================================
 @app.route('/history')
 def history():
 
-    history_data = [
-        {
-            "Hari": "Senin",
-            "Jam Mulai": "06:15",
-            "Jam Selesai": "08:00",
-            "Durasi": "1 Jam 45 Menit",
-            "Status": "Selesai"
-        }
-    ]
+    try:
 
-    return jsonify(history_data)
+        query = """
+        SELECT *
+        FROM sensor_data
+        WHERE status = 1
+        ORDER BY id DESC
+        LIMIT 20
+        """
 
-# =========================
-# WARNING OPERATOR
-# =========================
+        df = pd.read_sql(query, engine)
+
+        history_data = []
+
+        for _, row in df.iterrows():
+
+            waktu = pd.to_datetime(row["timestamp"])
+
+            history_data.append({
+                "Hari": waktu.strftime("%A"),
+                "Jam Mulai": waktu.strftime("%H:%M:%S"),
+                "Jam Selesai": "-",
+                "Durasi": "-",
+                "Status": "Mengalir"
+            })
+
+        return jsonify(history_data)
+
+    except Exception as e:
+
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+# ======================================
+# WARNING MANUAL OPERATOR
+# ======================================
 @app.route('/send_warning', methods=['POST'])
 def send_warning():
 
-    data = request.json
+    try:
 
-    message = data.get("message")
+        data = request.json
 
-    print("WARNING:", message)
+        message = data.get(
+            "message",
+            "Distribusi air mengalami gangguan sementara"
+        )
+
+        users = pd.read_sql(
+            "SELECT * FROM users",
+            engine
+        )
+
+        for _, user in users.iterrows():
+
+            nomor = user["nomor_wa"]
+
+            kirim_whatsapp(
+                nomor,
+                message
+            )
+
+        return jsonify({
+            "message": "warning terkirim"
+        })
+
+    except Exception as e:
+
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+# ======================================
+# TAMBAH USER
+# ======================================
+@app.route('/add_user', methods=['POST'])
+def add_user():
+
+    try:
+
+        data = request.json
+
+        nama = data.get("nama")
+        nomor_wa = data.get("nomor_wa")
+        jalur = data.get("jalur")
+
+        df = pd.DataFrame([{
+            "nama": nama,
+            "nomor_wa": nomor_wa,
+            "jalur": jalur
+        }])
+
+        df.to_sql(
+            "users",
+            engine,
+            if_exists="append",
+            index=False
+        )
+
+        return jsonify({
+            "message": "user berhasil ditambahkan"
+        })
+
+    except Exception as e:
+
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+# ======================================
+# ROOT
+# ======================================
+@app.route('/')
+def home():
 
     return jsonify({
-        "message": "warning terkirim"
+        "message": "Backend Early Warning System Aktif"
     })
 
-# =========================
+# ======================================
 # RUN
-# =========================
+# ======================================
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+
+    app.run(
+        host='0.0.0.0',
+        port=5000
+    )
