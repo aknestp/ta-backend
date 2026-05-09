@@ -56,6 +56,11 @@ def create_tables():
             status VARCHAR(20)
         );
         """)
+        CREATE TABLE users (
+            id SERIAL PRIMARY KEY,
+            nama VARCHAR(100),
+            nomor_wa VARCHAR(20)
+        );
 
 create_tables()
 
