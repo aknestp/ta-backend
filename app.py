@@ -7,33 +7,23 @@ import os
 from datetime import datetime
 
 # ======================================
-# FLASK CONFIG
+# CONFIG
 # ======================================
 app = Flask(__name__)
 CORS(app)
 
-# ======================================
-# DATABASE CONFIG
-# ======================================
 DATABASE_URL = os.getenv("DATABASE_URL")
+FONNTE_TOKEN = os.getenv("FONNTE_TOKEN")
 
 engine = create_engine(DATABASE_URL)
 
 # ======================================
-# FONNTE WHATSAPP CONFIG
-# ======================================
-FONNTE_TOKEN = os.getenv("FONNTE_TOKEN")
-
-# ======================================
-# CREATE TABLE IF NOT EXISTS
+# CREATE TABLES
 # ======================================
 def create_tables():
 
     with engine.connect() as conn:
 
-        # =========================
-        # SENSOR DATA
-        # =========================
         conn.exec_driver_sql("""
         CREATE TABLE IF NOT EXISTS sensor_data (
             id SERIAL PRIMARY KEY,
@@ -43,9 +33,6 @@ def create_tables():
         );
         """)
 
-        # =========================
-        # RIWAYAT DISTRIBUSI
-        # =========================
         conn.exec_driver_sql("""
         CREATE TABLE IF NOT EXISTS distribution_history (
             id SERIAL PRIMARY KEY,
@@ -56,22 +43,25 @@ def create_tables():
             status VARCHAR(20)
         );
         """)
-        CREATE TABLE users (
+
+        conn.exec_driver_sql("""
+        CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             nama VARCHAR(100),
             nomor_wa VARCHAR(20)
         );
+        """)
 
 create_tables()
 
 # ======================================
-# SEND WHATSAPP
+# WHATSAPP
 # ======================================
 def kirim_whatsapp(nomor, pesan):
 
     try:
 
-        response = requests.post(
+        requests.post(
             "https://api.fonnte.com/send",
             headers={
                 "Authorization": FONNTE_TOKEN
@@ -82,27 +72,22 @@ def kirim_whatsapp(nomor, pesan):
             }
         )
 
-        return response.status_code
-
     except Exception as e:
-        print("ERROR WHATSAPP:", e)
-        return 500
+        print(e)
 
 # ======================================
-# STATUS SEBELUMNYA
+# GET LAST STATUS
 # ======================================
 def get_last_status():
 
     try:
 
-        query = """
-        SELECT status
+        df = pd.read_sql("""
+        SELECT *
         FROM sensor_data
         ORDER BY id DESC
         LIMIT 1
-        """
-
-        df = pd.read_sql(query, engine)
+        """, engine)
 
         if len(df) == 0:
             return 0
@@ -113,7 +98,7 @@ def get_last_status():
         return 0
 
 # ======================================
-# SIMPAN DATA SENSOR
+# SAVE SENSOR DATA
 # ======================================
 @app.route('/dataset', methods=['POST'])
 def dataset():
@@ -125,15 +110,15 @@ def dataset():
         rms = float(data.get("rms", 0))
         status = int(data.get("status", 0))
 
-        timestamp = datetime.now()
+        now = datetime.now()
 
         last_status = get_last_status()
 
         # =========================
-        # SIMPAN KE DATABASE
+        # SAVE SENSOR DATA
         # =========================
         df = pd.DataFrame([{
-            "timestamp": timestamp,
+            "timestamp": now,
             "rms": rms,
             "status": status
         }])
@@ -146,7 +131,7 @@ def dataset():
         )
 
         # =========================
-        # EARLY WARNING
+        # AIR BARU DATANG
         # =========================
         if status == 1 and last_status == 0:
 
@@ -159,21 +144,38 @@ def dataset():
 🚰 INFORMASI DISTRIBUSI AIR
 
 Air mulai mengalir
-Hari: {timestamp.strftime('%A')}
-Pukul: {timestamp.strftime('%H:%M:%S')} WIB
 
-Pantau dashboard:
-https://ta-dashboard-production.up.railway.app
+Hari:
+{now.strftime('%A')}
+
+Pukul:
+{now.strftime('%H:%M:%S')} WIB
 """
 
             for _, user in users.iterrows():
 
-                nomor = user["nomor_wa"]
-
                 kirim_whatsapp(
-                    nomor,
+                    user["nomor_wa"],
                     pesan
                 )
+
+            # =========================
+            # SAVE HISTORY START
+            # =========================
+            history_df = pd.DataFrame([{
+                "tanggal": now.date(),
+                "jam_mulai": now.strftime("%H:%M:%S"),
+                "jam_selesai": "-",
+                "durasi": "-",
+                "status": "Mengalir"
+            }])
+
+            history_df.to_sql(
+                "distribution_history",
+                engine,
+                if_exists="append",
+                index=False
+            )
 
         return jsonify({
             "message": "data tersimpan"
@@ -186,21 +188,19 @@ https://ta-dashboard-production.up.railway.app
         }), 500
 
 # ======================================
-# DATA STATUS TERBARU
+# LATEST STATUS
 # ======================================
 @app.route('/latest')
 def latest():
 
     try:
 
-        query = """
+        df = pd.read_sql("""
         SELECT *
         FROM sensor_data
         ORDER BY id DESC
         LIMIT 1
-        """
-
-        df = pd.read_sql(query, engine)
+        """, engine)
 
         if len(df) == 0:
 
@@ -224,24 +224,25 @@ def latest():
 
         return jsonify({
             "error": str(e)
-        }), 500
+        })
 
 # ======================================
-# DATA GRAFIK RMS
+# CHART DATA
 # ======================================
 @app.route('/chart')
 def chart():
 
     try:
 
-        query = """
+        df = pd.read_sql("""
         SELECT *
         FROM sensor_data
         ORDER BY id DESC
         LIMIT 50
-        """
+        """, engine)
 
-        df = pd.read_sql(query, engine)
+        if len(df) == 0:
+            return jsonify([])
 
         df = df.sort_values("id")
 
@@ -251,52 +252,36 @@ def chart():
 
     except Exception as e:
 
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify([])
 
 # ======================================
-# RIWAYAT DISTRIBUSI
+# HISTORY
 # ======================================
 @app.route('/history')
 def history():
 
     try:
 
-        query = """
+        df = pd.read_sql("""
         SELECT *
-        FROM sensor_data
-        WHERE status = 1
+        FROM distribution_history
         ORDER BY id DESC
         LIMIT 20
-        """
+        """, engine)
 
-        df = pd.read_sql(query, engine)
+        if len(df) == 0:
+            return jsonify([])
 
-        history_data = []
-
-        for _, row in df.iterrows():
-
-            waktu = pd.to_datetime(row["timestamp"])
-
-            history_data.append({
-                "Hari": waktu.strftime("%A"),
-                "Jam Mulai": waktu.strftime("%H:%M:%S"),
-                "Jam Selesai": "-",
-                "Durasi": "-",
-                "Status": "Mengalir"
-            })
-
-        return jsonify(history_data)
+        return jsonify(
+            df.to_dict(orient='records')
+        )
 
     except Exception as e:
 
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify([])
 
 # ======================================
-# WARNING MANUAL OPERATOR
+# SEND WARNING
 # ======================================
 @app.route('/send_warning', methods=['POST'])
 def send_warning():
@@ -317,10 +302,8 @@ def send_warning():
 
         for _, user in users.iterrows():
 
-            nomor = user["nomor_wa"]
-
             kirim_whatsapp(
-                nomor,
+                user["nomor_wa"],
                 message
             )
 
@@ -332,51 +315,16 @@ def send_warning():
 
         return jsonify({
             "error": str(e)
-        }), 500
-
-# ======================================
-# TAMBAH USER
-# ======================================
-@app.route('/add_user', methods=['POST'])
-def add_user():
-
-    try:
-
-        data = request.json
-
-        nama = data.get("nama")
-        nomor_wa = data.get("nomor_wa")
-
-        df = pd.DataFrame([{
-            "nama": nama,
-            "nomor_wa": nomor_wa,
-        }])
-
-        df.to_sql(
-            "users",
-            engine,
-            if_exists="append",
-            index=False
-        )
-
-        return jsonify({
-            "message": "user berhasil ditambahkan"
         })
 
-    except Exception as e:
-
-        return jsonify({
-            "error": str(e)
-        }), 500
-
 # ======================================
-# ROOT
+# HOME
 # ======================================
 @app.route('/')
 def home():
 
     return jsonify({
-        "message": "Backend Early Warning System Aktif"
+        "message": "Backend aktif"
     })
 
 # ======================================
