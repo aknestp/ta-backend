@@ -341,12 +341,10 @@ def add_user():
 
         nama = data.get("nama")
         nomor_wa = data.get("nomor_wa")
-        jalur = data.get("jalur")
 
         df = pd.DataFrame([{
             "nama": nama,
             "nomor_wa": nomor_wa,
-            "jalur": jalur
         }])
 
         df.to_sql(
