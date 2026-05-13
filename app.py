@@ -6,6 +6,7 @@ import requests
 import os
 from datetime import datetime
 import threading
+import joblib  # <--- IMPORT JOBLIB UNTUK MACHINE LEARNING
 
 # ======================================
 # FLASK CONFIG
@@ -14,15 +15,24 @@ app = Flask(__name__)
 CORS(app)
 
 # ======================================
-# DATABASE CONFIG
+# DATABASE & API CONFIG
 # ======================================
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
+FONNTE_TOKEN = os.getenv("FONNTE_TOKEN")
 
 # ======================================
-# FONNTE WHATSAPP CONFIG
+# LOAD MACHINE LEARNING MODEL
 # ======================================
-FONNTE_TOKEN = os.getenv("FONNTE_TOKEN")
+# Ganti 'model_air.pkl' dengan nama file model aslimu!
+MODEL_PATH = "model_air.pkl" 
+
+try:
+    model_ml = joblib.load(MODEL_PATH)
+    print(f"[SISTEM] Model Machine Learning '{MODEL_PATH}' berhasil dimuat!")
+except Exception as e:
+    print(f"[ERROR] Gagal memuat model ML: {e}")
+    model_ml = None
 
 # ======================================
 # CREATE TABLE IF NOT EXISTS
@@ -75,7 +85,6 @@ def kirim_whatsapp(nomor, pesan):
     except Exception as e:
         print("ERROR WHATSAPP:", e)
 
-# Fungsi helper agar ESP32 tidak perlu menunggu proses pengiriman WA selesai
 def broadcast_whatsapp_background(pesan):
     try:
         users = pd.read_sql("SELECT * FROM users", engine)
@@ -99,16 +108,28 @@ def get_last_status():
         return 0
 
 # ======================================
-# SIMPAN DATA SENSOR
+# SIMPAN DATA SENSOR & PREDIKSI ML
 # ======================================
 @app.route('/dataset', methods=['POST'])
 def dataset():
     try:
         data = request.json
+        
+        # ESP32 HANYA PERLU MENGIRIM RMS SAJA
         rms = float(data.get("rms", 0))
-        status = int(data.get("status", 0))
-        timestamp = datetime.now()
+        
+        # ==========================================
+        # MACHINE LEARNING INFERENCE
+        # ==========================================
+        if model_ml is not None:
+            # Scikit-learn membutuhkan input berupa array 2 Dimensi, contoh: [[0.45]]
+            prediksi = model_ml.predict([[rms]])
+            status = int(prediksi[0])  # Hasilnya 1 (Mengalir) atau 0 (Mati)
+        else:
+            # Fallback (cadangan) jika file .pkl gagal dimuat / tidak ditemukan
+            status = int(data.get("status", 0))
 
+        timestamp = datetime.now()
         last_status = get_last_status()
 
         # 1. SIMPAN KE DATABASE
@@ -133,7 +154,7 @@ https://ta-dashboard-production.up.railway.app
             # Kirim WA di Background
             threading.Thread(target=broadcast_whatsapp_background, args=(pesan,)).start()
 
-            # Catat Jam Mulai ke tabel history
+            # Catat Jam Mulai
             history_df = pd.DataFrame([{
                 "tanggal": timestamp.date(),
                 "jam_mulai": timestamp.strftime("%H:%M:%S"),
@@ -148,24 +169,21 @@ https://ta-dashboard-production.up.railway.app
             jam_selesai = timestamp.strftime("%H:%M:%S")
             
             with engine.connect() as conn:
-                # Cari baris history yang belum selesai
                 res = conn.execute(text("SELECT id, jam_mulai FROM distribution_history WHERE jam_selesai = '-' ORDER BY id DESC LIMIT 1")).fetchone()
                 if res:
                     hist_id, j_mulai = res[0], res[1]
                     try:
-                        # Hitung durasi otomatis
                         fmt = "%H:%M:%S"
                         t_delta = datetime.strptime(jam_selesai, fmt) - datetime.strptime(j_mulai, fmt)
                         durasi = str(t_delta)
                     except:
                         durasi = "Selesai"
                     
-                    # Update jam selesai & durasi
                     conn.execute(text("UPDATE distribution_history SET jam_selesai=:js, durasi=:dur, status='Berhenti' WHERE id=:id"), 
                                  {"js": jam_selesai, "dur": durasi, "id": hist_id})
                     conn.commit()
 
-        return jsonify({"message": "data tersimpan"})
+        return jsonify({"message": "data tersimpan, diprediksi oleh ML", "prediksi_status": status})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -176,13 +194,11 @@ https://ta-dashboard-production.up.railway.app
 @app.route('/latest')
 def latest():
     try:
-        # Ambil status sensor terakhir
         df = pd.read_sql("SELECT * FROM sensor_data ORDER BY id DESC LIMIT 1", engine)
         if len(df) == 0:
             return jsonify({"status": 0, "time": "-", "last_water_time": "-", "duration": "-"})
         latest = df.iloc[0]
 
-        # Ambil data distribusi terakhir dari tabel history agar datanya akurat
         hist_df = pd.read_sql("SELECT * FROM distribution_history ORDER BY id DESC LIMIT 1", engine)
         last_water_time = "-"
         duration = "-"
@@ -198,7 +214,6 @@ def latest():
             "last_water_time": last_water_time,
             "duration": duration
         })
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -209,7 +224,7 @@ def latest():
 def chart():
     try:
         df = pd.read_sql("SELECT rms FROM sensor_data ORDER BY id DESC LIMIT 50", engine)
-        df = df.sort_index(ascending=False) # Balik urutan agar berurutan dari kiri ke kanan di grafik
+        df = df.sort_index(ascending=False) 
         return jsonify(df.to_dict(orient='records'))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -220,10 +235,8 @@ def chart():
 @app.route('/history')
 def history():
     try:
-        # Sekarang membaca dari tabel distribution_history yang sesungguhnya!
         df = pd.read_sql("SELECT * FROM distribution_history ORDER BY id DESC LIMIT 20", engine)
         history_data = []
-
         for _, row in df.iterrows():
             history_data.append({
                 "Tanggal": str(row["tanggal"]),
@@ -232,7 +245,6 @@ def history():
                 "Durasi": row["durasi"],
                 "Status": row["status"]
             })
-
         return jsonify(history_data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -245,7 +257,6 @@ def send_warning():
     try:
         data = request.json
         message = data.get("message", "Distribusi air mengalami gangguan sementara")
-        # Eksekusi di background agar UI tidak loading lama
         threading.Thread(target=broadcast_whatsapp_background, args=(message,)).start()
         return jsonify({"message": "warning terkirim"})
     except Exception as e:
@@ -273,12 +284,11 @@ def add_user():
 # ======================================
 @app.route('/')
 def home():
-    return jsonify({"message": "Backend Early Warning System Aktif"})
+    return jsonify({"message": "Backend Early Warning System (dengan Machine Learning) Aktif"})
 
 # ======================================
 # RUN
 # ======================================
 if __name__ == '__main__':
-    # Railway menggunakan env PORT, default ke 5000 jika kosong
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
