@@ -8,21 +8,24 @@ from datetime import datetime
 import threading
 
 # ======================================
-# CONFIG
+# FLASK CONFIG
 # ======================================
 app = Flask(__name__)
 CORS(app)
 
-# Pastikan environment variable ini sudah di-set di Supabase / terminal kamu
-# Atau ganti dengan string aslinya sementara untuk testing
-
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:JjwcORoMcbMipdgeYjsLFfzzBQirWmBG@postgres.railway.internal:5432/railway")
-FONNTE_TOKEN = os.getenv("FONNTE_TOKEN", "EwbABvWy3izcwCFbByiC")
-
+# ======================================
+# DATABASE CONFIG
+# ======================================
+DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
 
 # ======================================
-# CREATE TABLES (Biarkan seperti aslimu)
+# FONNTE WHATSAPP CONFIG
+# ======================================
+FONNTE_TOKEN = os.getenv("FONNTE_TOKEN")
+
+# ======================================
+# CREATE TABLE IF NOT EXISTS
 # ======================================
 def create_tables():
     with engine.connect() as conn:
@@ -50,7 +53,8 @@ def create_tables():
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             nama VARCHAR(100),
-            nomor_wa VARCHAR(20)
+            nomor_wa VARCHAR(20),
+            jalur VARCHAR(50)
         );
         """)
         conn.commit()
@@ -58,7 +62,7 @@ def create_tables():
 create_tables()
 
 # ======================================
-# WHATSAPP (Dengan Threading agar ESP32 tidak antre)
+# SEND WHATSAPP (DENGAN THREADING)
 # ======================================
 def kirim_whatsapp(nomor, pesan):
     try:
@@ -68,23 +72,22 @@ def kirim_whatsapp(nomor, pesan):
             data={"target": nomor, "message": pesan},
             timeout=10
         )
-        print(f"[WA] Terkirim ke {nomor}")
     except Exception as e:
-        print(f"[WA ERROR] {e}")
+        print("ERROR WHATSAPP:", e)
 
-# Fungsi helper untuk broadcast WA ke semua user di background
-def broadcast_wa_background(pesan):
+# Fungsi helper agar ESP32 tidak perlu menunggu proses pengiriman WA selesai
+def broadcast_whatsapp_background(pesan):
     try:
         users = pd.read_sql("SELECT * FROM users", engine)
         for _, user in users.iterrows():
-            # Jika nomor_wa ada, kirim
-            if user["nomor_wa"]:
-                kirim_whatsapp(user["nomor_wa"], pesan)
+            nomor = user["nomor_wa"]
+            if nomor:
+                kirim_whatsapp(nomor, pesan)
     except Exception as e:
-        print(f"[BROADCAST ERROR] {e}")
+        print("ERROR BROADCAST:", e)
 
 # ======================================
-# GET LAST STATUS
+# STATUS SEBELUMNYA
 # ======================================
 def get_last_status():
     try:
@@ -96,7 +99,7 @@ def get_last_status():
         return 0
 
 # ======================================
-# ENDPOINT UNTUK ESP32 (MENERIMA DATA)
+# SIMPAN DATA SENSOR
 # ======================================
 @app.route('/dataset', methods=['POST'])
 def dataset():
@@ -104,151 +107,178 @@ def dataset():
         data = request.json
         rms = float(data.get("rms", 0))
         status = int(data.get("status", 0))
-        now = datetime.now()
-        
+        timestamp = datetime.now()
+
         last_status = get_last_status()
 
-        # 1. SAVE SENSOR DATA
+        # 1. SIMPAN KE DATABASE
         df = pd.DataFrame([{
-            "timestamp": now,
+            "timestamp": timestamp,
             "rms": rms,
             "status": status
         }])
         df.to_sql("sensor_data", engine, if_exists="append", index=False)
 
-        # 2. LOGIKA AIR BARU DATANG (MATI -> NYALA)
+        # 2. LOGIKA AIR BARU DATANG (MATI -> MENGALIR)
         if status == 1 and last_status == 0:
-            pesan = f"🚰 INFORMASI DISTRIBUSI AIR\n\nAir mulai mengalir\n\nHari:\n{now.strftime('%A')}\n\nPukul:\n{now.strftime('%H:%M:%S')} WIB"
-            
-            # Kirim WA di Background (tidak membebani ESP32)
-            threading.Thread(target=broadcast_wa_background, args=(pesan,)).start()
+            pesan = f"""🚰 INFORMASI DISTRIBUSI AIR
 
-            # Save History Start
+Air mulai mengalir
+Hari: {timestamp.strftime('%A')}
+Pukul: {timestamp.strftime('%H:%M:%S')} WIB
+
+Pantau dashboard:
+https://ta-dashboard-production.up.railway.app
+"""
+            # Kirim WA di Background
+            threading.Thread(target=broadcast_whatsapp_background, args=(pesan,)).start()
+
+            # Catat Jam Mulai ke tabel history
             history_df = pd.DataFrame([{
-                "tanggal": now.date(),
-                "jam_mulai": now.strftime("%H:%M:%S"),
+                "tanggal": timestamp.date(),
+                "jam_mulai": timestamp.strftime("%H:%M:%S"),
                 "jam_selesai": "-",
                 "durasi": "-",
                 "status": "Mengalir"
             }])
             history_df.to_sql("distribution_history", engine, if_exists="append", index=False)
 
-        # 3. LOGIKA AIR BERHENTI (NYALA -> MATI)
+        # 3. LOGIKA AIR BERHENTI (MENGALIR -> MATI)
         elif status == 0 and last_status == 1:
-            jam_selesai = now.strftime("%H:%M:%S")
+            jam_selesai = timestamp.strftime("%H:%M:%S")
             
-            # Update data history terakhir yang belum selesai menggunakan SQLAlchemy
             with engine.connect() as conn:
-                # Ambil data yang jam selesainya masih "-"
-                query = text("""
-                    SELECT id, jam_mulai FROM distribution_history 
-                    WHERE jam_selesai = '-' ORDER BY id DESC LIMIT 1
-                """)
-                result = conn.execute(query).fetchone()
-                
-                if result:
-                    history_id = result[0]
-                    jam_mulai_str = result[1]
-                    
-                    # Hitung durasi (selisih waktu)
+                # Cari baris history yang belum selesai
+                res = conn.execute(text("SELECT id, jam_mulai FROM distribution_history WHERE jam_selesai = '-' ORDER BY id DESC LIMIT 1")).fetchone()
+                if res:
+                    hist_id, j_mulai = res[0], res[1]
                     try:
-                        format_jam = "%H:%M:%S"
-                        waktu_mulai = datetime.strptime(jam_mulai_str, format_jam)
-                        waktu_selesai = datetime.strptime(jam_selesai, format_jam)
-                        durasi = str(waktu_selesai - waktu_mulai) # Contoh output: "02:15:30"
+                        # Hitung durasi otomatis
+                        fmt = "%H:%M:%S"
+                        t_delta = datetime.strptime(jam_selesai, fmt) - datetime.strptime(j_mulai, fmt)
+                        durasi = str(t_delta)
                     except:
                         durasi = "Selesai"
-
-                    # Update database
-                    update_query = text("""
-                        UPDATE distribution_history 
-                        SET jam_selesai = :jam_selesai, durasi = :durasi, status = 'Selesai' 
-                        WHERE id = :id
-                    """)
-                    conn.execute(update_query, {"jam_selesai": jam_selesai, "durasi": durasi, "id": history_id})
+                    
+                    # Update jam selesai & durasi
+                    conn.execute(text("UPDATE distribution_history SET jam_selesai=:js, durasi=:dur, status='Berhenti' WHERE id=:id"), 
+                                 {"js": jam_selesai, "dur": durasi, "id": hist_id})
                     conn.commit()
 
-        return jsonify({"message": "data tersimpan"}), 200
+        return jsonify({"message": "data tersimpan"})
 
     except Exception as e:
-        print(f"[DATASET ERROR] {e}")
         return jsonify({"error": str(e)}), 500
 
 # ======================================
-# ENDPOINT UNTUK STREAMLIT (DASHBOARD)
+# DATA STATUS TERBARU
 # ======================================
-@app.route('/api/dashboard_data', methods=['GET'])
-def dashboard_data():
+@app.route('/latest')
+def latest():
     try:
-        # Data Grafik
-        chart_df = pd.read_sql("SELECT rms FROM sensor_data ORDER BY id DESC LIMIT 20", engine)
-        chart_data = chart_df.iloc[::-1].to_dict(orient='records') if not chart_df.empty else [{"rms": 0}]
+        # Ambil status sensor terakhir
+        df = pd.read_sql("SELECT * FROM sensor_data ORDER BY id DESC LIMIT 1", engine)
+        if len(df) == 0:
+            return jsonify({"status": 0, "time": "-", "last_water_time": "-", "duration": "-"})
+        latest = df.iloc[0]
 
-        # Data Sensor Terakhir
-        latest_df = pd.read_sql("SELECT * FROM sensor_data ORDER BY id DESC LIMIT 1", engine)
-        if not latest_df.empty:
-            latest = latest_df.iloc[0]
-            status_angka = int(latest["status"])
-            waktu_deteksi = str(latest["timestamp"])
-            sensor_status = "Online"
-            status_text = "🟢 AIR MENGALIR" if status_angka == 1 else "🔴 AIR TIDAK MENGALIR"
-        else:
-            waktu_deteksi = "-"
-            sensor_status = "Offline"
-            status_text = "🔴 AIR TIDAK MENGALIR"
-
-        # Data History
-        history_df = pd.read_sql("SELECT * FROM distribution_history ORDER BY id DESC LIMIT 10", engine)
-        history_data = history_df.to_dict(orient='records') if not history_df.empty else []
-
-        # Ringkasan Distribusi Terakhir
+        # Ambil data distribusi terakhir dari tabel history agar datanya akurat
+        hist_df = pd.read_sql("SELECT * FROM distribution_history ORDER BY id DESC LIMIT 1", engine)
         last_water_time = "-"
         duration = "-"
-        if not history_df.empty:
-            latest_hist = history_df.iloc[0]
-            last_water_time = f"{latest_hist['tanggal']} {latest_hist['jam_mulai']}"
-            duration = latest_hist['durasi'] if latest_hist['durasi'] != "-" else "Sedang Mengalir..."
+        
+        if len(hist_df) > 0:
+            hist = hist_df.iloc[0]
+            last_water_time = f"{hist['tanggal']} {hist['jam_mulai']}"
+            duration = hist['durasi'] if hist['durasi'] != "-" else "Sedang Mengalir"
 
         return jsonify({
-            "latest_data": {
-                "time": waktu_deteksi,
-                "last_water_time": last_water_time,
-                "duration": duration
-            },
-            "history_data": history_data,
-            "chart_data": chart_data,
-            "status_text": status_text,
-            "sensor_status": sensor_status
-        }), 200
+            "status": int(latest["status"]),
+            "time": str(latest["timestamp"]),
+            "last_water_time": last_water_time,
+            "duration": duration
+        })
 
     except Exception as e:
-        print(f"[DASHBOARD ERROR] {e}")
-        return jsonify({"error": "Gagal mengambil data"}), 500
+        return jsonify({"error": str(e)}), 500
 
 # ======================================
-# SEND WARNING (TOMBOL STREAMLIT)
+# DATA GRAFIK RMS
+# ======================================
+@app.route('/chart')
+def chart():
+    try:
+        df = pd.read_sql("SELECT rms FROM sensor_data ORDER BY id DESC LIMIT 50", engine)
+        df = df.sort_index(ascending=False) # Balik urutan agar berurutan dari kiri ke kanan di grafik
+        return jsonify(df.to_dict(orient='records'))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ======================================
+# RIWAYAT DISTRIBUSI
+# ======================================
+@app.route('/history')
+def history():
+    try:
+        # Sekarang membaca dari tabel distribution_history yang sesungguhnya!
+        df = pd.read_sql("SELECT * FROM distribution_history ORDER BY id DESC LIMIT 20", engine)
+        history_data = []
+
+        for _, row in df.iterrows():
+            history_data.append({
+                "Tanggal": str(row["tanggal"]),
+                "Jam Mulai": row["jam_mulai"],
+                "Jam Selesai": row["jam_selesai"],
+                "Durasi": row["durasi"],
+                "Status": row["status"]
+            })
+
+        return jsonify(history_data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ======================================
+# WARNING MANUAL OPERATOR
 # ======================================
 @app.route('/send_warning', methods=['POST'])
 def send_warning():
     try:
         data = request.json
         message = data.get("message", "Distribusi air mengalami gangguan sementara")
-        # Kirim WA di Background
-        threading.Thread(target=broadcast_wa_background, args=(message,)).start()
-        
+        # Eksekusi di background agar UI tidak loading lama
+        threading.Thread(target=broadcast_whatsapp_background, args=(message,)).start()
         return jsonify({"message": "warning terkirim"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 # ======================================
-# HEALTH CHECK
+# TAMBAH USER
+# ======================================
+@app.route('/add_user', methods=['POST'])
+def add_user():
+    try:
+        data = request.json
+        df = pd.DataFrame([{
+            "nama": data.get("nama"),
+            "nomor_wa": data.get("nomor_wa"),
+            "jalur": data.get("jalur")
+        }])
+        df.to_sql("users", engine, if_exists="append", index=False)
+        return jsonify({"message": "user berhasil ditambahkan"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ======================================
+# ROOT
 # ======================================
 @app.route('/')
 def home():
-    return jsonify({"message": "Backend aktif di Port 8000"})
+    return jsonify({"message": "Backend Early Warning System Aktif"})
 
 # ======================================
-# RUN (PORT 8000 AGAR COCOK DENGAN STREAMLIT)
+# RUN
 # ======================================
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    # Railway menggunakan env PORT, default ke 5000 jika kosong
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
