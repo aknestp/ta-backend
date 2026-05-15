@@ -42,7 +42,7 @@ def create_tables():
         conn.exec_driver_sql("""
         CREATE TABLE IF NOT EXISTS sensor_data (
             id SERIAL PRIMARY KEY,
-            timestamp TIMESTAMP,
+            waktu TIMESTAMP,
             rms FLOAT,
             status INTEGER
         );
@@ -134,7 +134,7 @@ def dataset():
 
         # 1. SIMPAN KE DATABASE
         df = pd.DataFrame([{
-            "timestamp": timestamp,
+            "waktu": timestamp,
             "rms": rms,
             "status": status
         }])
@@ -210,7 +210,7 @@ def latest():
 
         return jsonify({
             "status": int(latest["status"]),
-            "time": str(latest["timestamp"]),
+            "time": str(latest["waktu"]),
             "last_water_time": last_water_time,
             "duration": duration
         })
