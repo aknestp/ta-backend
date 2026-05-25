@@ -1,48 +1,37 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 import pandas as pd
 import requests
 import os
 from datetime import datetime
-import threading
-import joblib  # <--- IMPORT JOBLIB UNTUK MACHINE LEARNING
+import pytz
 
 # ======================================
-# FLASK CONFIG
+# CONFIG
 # ======================================
 app = Flask(__name__)
 CORS(app)
 
-# ======================================
-# DATABASE & API CONFIG
-# ======================================
 DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL)
 FONNTE_TOKEN = os.getenv("FONNTE_TOKEN")
 
-# ======================================
-# LOAD MACHINE LEARNING MODEL
-# ======================================
-# Ganti 'model_air.pkl' dengan nama file model aslimu!
-MODEL_PATH = "model_air.pkl" 
-
-try:
-    model_ml = joblib.load(MODEL_PATH)
-    print(f"[SISTEM] Model Machine Learning '{MODEL_PATH}' berhasil dimuat!")
-except Exception as e:
-    print(f"[ERROR] Gagal memuat model ML: {e}")
-    model_ml = None
+engine = create_engine(DATABASE_URL)
 
 # ======================================
-# CREATE TABLE IF NOT EXISTS
+# CREATE TABLES
 # ======================================
 def create_tables():
     with engine.connect() as conn:
+        # Tabel sensor_data sudah diperbarui dengan ax, ay, az, dan mean
         conn.exec_driver_sql("""
         CREATE TABLE IF NOT EXISTS sensor_data (
             id SERIAL PRIMARY KEY,
-            waktu TIMESTAMP,
+            timestamp TIMESTAMP,
+            ax FLOAT,
+            ay FLOAT,
+            az FLOAT,
+            mean FLOAT,
             rms FLOAT,
             status INTEGER
         );
@@ -63,232 +52,303 @@ def create_tables():
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             nama VARCHAR(100),
-            nomor_wa VARCHAR(20),
-            jalur VARCHAR(50)
+            nomor_wa VARCHAR(20)
         );
         """)
-        conn.commit()
 
 create_tables()
 
 # ======================================
-# SEND WHATSAPP (DENGAN THREADING)
+# WHATSAPP
 # ======================================
 def kirim_whatsapp(nomor, pesan):
     try:
         requests.post(
             "https://api.fonnte.com/send",
-            headers={"Authorization": FONNTE_TOKEN},
-            data={"target": nomor, "message": pesan},
-            timeout=10
+            headers={
+                "Authorization": FONNTE_TOKEN
+            },
+            data={
+                "target": nomor,
+                "message": pesan
+            }
         )
     except Exception as e:
-        print("ERROR WHATSAPP:", e)
-
-def broadcast_whatsapp_background(pesan):
-    try:
-        users = pd.read_sql("SELECT * FROM users", engine)
-        for _, user in users.iterrows():
-            nomor = user["nomor_wa"]
-            if nomor:
-                kirim_whatsapp(nomor, pesan)
-    except Exception as e:
-        print("ERROR BROADCAST:", e)
+        print(e)
 
 # ======================================
-# STATUS SEBELUMNYA
+# GET LAST STATUS
 # ======================================
 def get_last_status():
     try:
-        df = pd.read_sql("SELECT status FROM sensor_data ORDER BY id DESC LIMIT 1", engine)
+        df = pd.read_sql("""
+        SELECT *
+        FROM sensor_data
+        ORDER BY id DESC
+        LIMIT 1
+        """, engine)
+
         if len(df) == 0:
             return 0
+
         return int(df.iloc[0]["status"])
+
     except:
         return 0
 
 # ======================================
-# SIMPAN DATA SENSOR & PREDIKSI ML
+# SAVE SENSOR DATA
 # ======================================
 @app.route('/dataset', methods=['POST'])
 def dataset():
     try:
         data = request.json
-        
-        # ESP32 HANYA PERLU MENGIRIM RMS SAJA
-        rms = float(data.get("rms", 0))
-        
-        # ==========================================
-        # MACHINE LEARNING INFERENCE
-        # ==========================================
-        if model_ml is not None:
-            # Scikit-learn membutuhkan input berupa array 2 Dimensi, contoh: [[0.45]]
-            prediksi = model_ml.predict([[rms]])
-            status = int(prediksi[0])  # Hasilnya 1 (Mengalir) atau 0 (Mati)
-        else:
-            # Fallback (cadangan) jika file .pkl gagal dimuat / tidak ditemukan
-            status = int(data.get("status", 0))
 
-        timestamp = datetime.now()
+        # 1. Menangkap semua variabel dari ESP32
+        ax = float(data.get("ax", 0))
+        ay = float(data.get("ay", 0))
+        az = float(data.get("az", 0))
+        mean = float(data.get("mean", 0))
+        rms = float(data.get("rms", 0))
+        status = int(data.get("status", 0))
+
+        # 2. Penyesuaian Zona Waktu ke WIB
+        tz_wib = pytz.timezone('Asia/Jakarta')
+        now_wib = datetime.now(tz_wib)
+        
+        # Menghapus info timezone agar aman masuk ke kolom TIMESTAMP PostgreSQL
+        now = now_wib.replace(tzinfo=None) 
+
         last_status = get_last_status()
 
-        # 1. SIMPAN KE DATABASE
+        # =========================
+        # SAVE SENSOR DATA (Semua Sumbu)
+        # =========================
         df = pd.DataFrame([{
-            "waktu": timestamp,
+            "timestamp": now,
+            "ax": ax,
+            "ay": ay,
+            "az": az,
+            "mean": mean,
             "rms": rms,
             "status": status
         }])
-        df.to_sql("sensor_data", engine, if_exists="append", index=False)
 
-        # 2. LOGIKA AIR BARU DATANG (MATI -> MENGALIR)
+        df.to_sql(
+            "sensor_data",
+            engine,
+            if_exists="append",
+            index=False
+        )
+
+        # =========================
+        # AIR BARU DATANG (0 -> 1)
+        # =========================
         if status == 1 and last_status == 0:
+            users = pd.read_sql(
+                "SELECT * FROM users",
+                engine
+            )
+
             pesan = f"""🚰 INFORMASI DISTRIBUSI AIR
 
-Air mulai mengalir
-Hari: {timestamp.strftime('%A')}
-Pukul: {timestamp.strftime('%H:%M:%S')} WIB
+Air mulai mengalir di Desa Lubuk Raman.
 
-Pantau dashboard:
-https://ta-dashboard-production.up.railway.app
+Hari:
+{now_wib.strftime('%A')}
+
+Pukul:
+{now_wib.strftime('%H:%M:%S')} WIB
 """
-            # Kirim WA di Background
-            threading.Thread(target=broadcast_whatsapp_background, args=(pesan,)).start()
+            for _, user in users.iterrows():
+                kirim_whatsapp(
+                    user["nomor_wa"],
+                    pesan
+                )
 
-            # Catat Jam Mulai
+            # SAVE HISTORY START
             history_df = pd.DataFrame([{
-                "tanggal": timestamp.date(),
-                "jam_mulai": timestamp.strftime("%H:%M:%S"),
+                "tanggal": now_wib.date(),
+                "jam_mulai": now_wib.strftime("%H:%M:%S"),
                 "jam_selesai": "-",
                 "durasi": "-",
                 "status": "Mengalir"
             }])
-            history_df.to_sql("distribution_history", engine, if_exists="append", index=False)
 
-        # 3. LOGIKA AIR BERHENTI (MENGALIR -> MATI)
+            history_df.to_sql(
+                "distribution_history",
+                engine,
+                if_exists="append",
+                index=False
+            )
+
+        # =========================
+        # AIR BERHENTI (1 -> 0)
+        # =========================
         elif status == 0 and last_status == 1:
-            jam_selesai = timestamp.strftime("%H:%M:%S")
+            jam_selesai_sekarang = now_wib.strftime("%H:%M:%S")
             
-            with engine.connect() as conn:
-                res = conn.execute(text("SELECT id, jam_mulai FROM distribution_history WHERE jam_selesai = '-' ORDER BY id DESC LIMIT 1")).fetchone()
-                if res:
-                    hist_id, j_mulai = res[0], res[1]
-                    try:
-                        fmt = "%H:%M:%S"
-                        t_delta = datetime.strptime(jam_selesai, fmt) - datetime.strptime(j_mulai, fmt)
-                        durasi = str(t_delta)
-                    except:
-                        durasi = "Selesai"
-                    
-                    conn.execute(text("UPDATE distribution_history SET jam_selesai=:js, durasi=:dur, status='Berhenti' WHERE id=:id"), 
-                                 {"js": jam_selesai, "dur": durasi, "id": hist_id})
-                    conn.commit()
+            # Update baris history terakhir
+            with engine.begin() as conn:
+                conn.exec_driver_sql(f"""
+                    UPDATE distribution_history 
+                    SET jam_selesai = '{jam_selesai_sekarang}', status = 'Selesai'
+                    WHERE id = (SELECT id FROM distribution_history ORDER BY id DESC LIMIT 1)
+                """)
+            
+            # Broadcast WA Air Berhenti
+            users = pd.read_sql("SELECT * FROM users", engine)
+            pesan_berhenti = f"""🚰 INFORMASI DISTRIBUSI AIR
 
-        return jsonify({"message": "data tersimpan, diprediksi oleh ML", "prediksi_status": status})
+Distribusi air di Desa Lubuk Raman telah berhenti mengalir.
+
+Pukul:
+{jam_selesai_sekarang} WIB
+"""
+            for _, user in users.iterrows():
+                kirim_whatsapp(user["nomor_wa"], pesan_berhenti)
+
+        return jsonify({
+            "message": "data tersimpan"
+        })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": str(e)
+        }), 500
 
 # ======================================
-# DATA STATUS TERBARU
+# LATEST STATUS
 # ======================================
 @app.route('/latest')
 def latest():
     try:
-        df = pd.read_sql("SELECT * FROM sensor_data ORDER BY id DESC LIMIT 1", engine)
-        if len(df) == 0:
-            return jsonify({"status": 0, "time": "-", "last_water_time": "-", "duration": "-"})
-        latest = df.iloc[0]
+        df = pd.read_sql("""
+        SELECT *
+        FROM sensor_data
+        ORDER BY id DESC
+        LIMIT 1
+        """, engine)
 
-        hist_df = pd.read_sql("SELECT * FROM distribution_history ORDER BY id DESC LIMIT 1", engine)
-        last_water_time = "-"
-        duration = "-"
-        
-        if len(hist_df) > 0:
-            hist = hist_df.iloc[0]
-            last_water_time = f"{hist['tanggal']} {hist['jam_mulai']}"
-            duration = hist['durasi'] if hist['durasi'] != "-" else "Sedang Mengalir"
+        if len(df) == 0:
+            return jsonify({
+                "status": 0,
+                "time": "-",
+                "last_water_time": "-",
+                "duration": "-"
+            })
+
+        latest = df.iloc[0]
 
         return jsonify({
             "status": int(latest["status"]),
-            "time": str(latest["waktu"]),
-            "last_water_time": last_water_time,
-            "duration": duration
+            "time": str(latest["timestamp"]),
+            "last_water_time": str(latest["timestamp"]),
+            "duration": "Aktif" if int(latest["status"]) == 1 else "Nonaktif"
         })
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": str(e)
+        })
 
 # ======================================
-# DATA GRAFIK RMS
+# CHART DATA
 # ======================================
 @app.route('/chart')
 def chart():
     try:
-        df = pd.read_sql("SELECT rms FROM sensor_data ORDER BY id DESC LIMIT 50", engine)
-        df = df.sort_index(ascending=False) 
-        return jsonify(df.to_dict(orient='records'))
+        df = pd.read_sql("""
+        SELECT *
+        FROM sensor_data
+        ORDER BY id DESC
+        LIMIT 50
+        """, engine)
+
+        if len(df) == 0:
+            return jsonify([])
+
+        df = df.sort_values("id")
+        df['timestamp'] = df['timestamp'].astype(str)
+
+        return jsonify(
+            df.to_dict(orient='records')
+        )
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify([])
 
 # ======================================
-# RIWAYAT DISTRIBUSI
+# HISTORY
 # ======================================
 @app.route('/history')
 def history():
     try:
-        df = pd.read_sql("SELECT * FROM distribution_history ORDER BY id DESC LIMIT 20", engine)
-        history_data = []
-        for _, row in df.iterrows():
-            history_data.append({
-                "Tanggal": str(row["tanggal"]),
-                "Jam Mulai": row["jam_mulai"],
-                "Jam Selesai": row["jam_selesai"],
-                "Durasi": row["durasi"],
-                "Status": row["status"]
-            })
-        return jsonify(history_data)
+        df = pd.read_sql("""
+        SELECT *
+        FROM distribution_history
+        ORDER BY id DESC
+        LIMIT 20
+        """, engine)
+
+        if len(df) == 0:
+            return jsonify([])
+        
+        df['tanggal'] = df['tanggal'].astype(str)
+
+        return jsonify(
+            df.to_dict(orient='records')
+        )
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify([])
 
 # ======================================
-# WARNING MANUAL OPERATOR
+# SEND WARNING
 # ======================================
 @app.route('/send_warning', methods=['POST'])
 def send_warning():
     try:
         data = request.json
-        message = data.get("message", "Distribusi air mengalami gangguan sementara")
-        threading.Thread(target=broadcast_whatsapp_background, args=(message,)).start()
-        return jsonify({"message": "warning terkirim"})
+        message = data.get(
+            "message",
+            "Distribusi air mengalami gangguan sementara"
+        )
+
+        users = pd.read_sql(
+            "SELECT * FROM users",
+            engine
+        )
+
+        for _, user in users.iterrows():
+            kirim_whatsapp(
+                user["nomor_wa"],
+                message
+            )
+
+        return jsonify({
+            "message": "warning terkirim"
+        })
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": str(e)
+        })
 
 # ======================================
-# TAMBAH USER
-# ======================================
-@app.route('/add_user', methods=['POST'])
-def add_user():
-    try:
-        data = request.json
-        df = pd.DataFrame([{
-            "nama": data.get("nama"),
-            "nomor_wa": data.get("nomor_wa"),
-            "jalur": data.get("jalur")
-        }])
-        df.to_sql("users", engine, if_exists="append", index=False)
-        return jsonify({"message": "user berhasil ditambahkan"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# ======================================
-# ROOT
+# HOME
 # ======================================
 @app.route('/')
 def home():
-    return jsonify({"message": "Backend Early Warning System (dengan Machine Learning) Aktif"})
+    return jsonify({
+        "message": "Backend aktif"
+    })
 
 # ======================================
 # RUN
 # ======================================
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(
+        host='0.0.0.0',
+        port=5000
+    )
