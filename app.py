@@ -6,6 +6,7 @@ import requests
 import os
 from datetime import datetime
 import pytz
+import joblib  # Tambahan untuk memuat model Machine Learning
 
 # ======================================
 # CONFIG
@@ -19,11 +20,23 @@ FONNTE_TOKEN = os.getenv("FONNTE_TOKEN")
 engine = create_engine(DATABASE_URL)
 
 # ======================================
+# LOAD MACHINE LEARNING MODEL
+# ======================================
+# Flask akan memuat model ini satu kali saat server pertama kali menyala.
+# Ganti 'model_getaran.pkl' dengan nama file model aslimu!
+try:
+    model_ml = joblib.load('model_getaran.pkl')
+    MODEL_SIAP = True
+    print("Model Machine Learning berhasil dimuat!")
+except Exception as e:
+    print(f"Gagal memuat model ML: {e}")
+    MODEL_SIAP = False
+
+# ======================================
 # CREATE TABLES
 # ======================================
 def create_tables():
     with engine.connect() as conn:
-        # Tabel sensor_data sudah diperbarui dengan ax, ay, az, dan mean
         conn.exec_driver_sql("""
         CREATE TABLE IF NOT EXISTS sensor_data (
             id SERIAL PRIMARY KEY,
@@ -97,32 +110,38 @@ def get_last_status():
         return 0
 
 # ======================================
-# SAVE SENSOR DATA
+# SAVE SENSOR DATA & ML PREDICTION
 # ======================================
 @app.route('/dataset', methods=['POST'])
 def dataset():
     try:
         data = request.json
 
-        # 1. Menangkap semua variabel dari ESP32
+        # 1. Menangkap data mentah dari ESP32 (tanpa status)
         ax = float(data.get("ax", 0))
         ay = float(data.get("ay", 0))
         az = float(data.get("az", 0))
         mean = float(data.get("mean", 0))
         rms = float(data.get("rms", 0))
-        status = int(data.get("status", 0))
 
-        # 2. Penyesuaian Zona Waktu ke WIB
+        # 2. PREDIKSI MACHINE LEARNING
+        if MODEL_SIAP:
+            # Model menerima 5 fitur sesuai urutan saat kamu melatihnya
+            prediksi = model_ml.predict([[ax, ay, az, mean, rms]])[0]
+            status = int(prediksi)
+        else:
+            # Fallback jika model gagal diload agar server tidak crash
+            status = 0 
+
+        # 3. Penyesuaian Zona Waktu ke WIB
         tz_wib = pytz.timezone('Asia/Jakarta')
         now_wib = datetime.now(tz_wib)
-        
-        # Menghapus info timezone agar aman masuk ke kolom TIMESTAMP PostgreSQL
         now = now_wib.replace(tzinfo=None) 
 
         last_status = get_last_status()
 
         # =========================
-        # SAVE SENSOR DATA (Semua Sumbu)
+        # SAVE SENSOR DATA
         # =========================
         df = pd.DataFrame([{
             "timestamp": now,
@@ -145,10 +164,7 @@ def dataset():
         # AIR BARU DATANG (0 -> 1)
         # =========================
         if status == 1 and last_status == 0:
-            users = pd.read_sql(
-                "SELECT * FROM users",
-                engine
-            )
+            users = pd.read_sql("SELECT * FROM users", engine)
 
             pesan = f"""🚰 INFORMASI DISTRIBUSI AIR
 
@@ -161,10 +177,7 @@ Pukul:
 {now_wib.strftime('%H:%M:%S')} WIB
 """
             for _, user in users.iterrows():
-                kirim_whatsapp(
-                    user["nomor_wa"],
-                    pesan
-                )
+                kirim_whatsapp(user["nomor_wa"], pesan)
 
             # SAVE HISTORY START
             history_df = pd.DataFrame([{
@@ -188,7 +201,6 @@ Pukul:
         elif status == 0 and last_status == 1:
             jam_selesai_sekarang = now_wib.strftime("%H:%M:%S")
             
-            # Update baris history terakhir
             with engine.begin() as conn:
                 conn.exec_driver_sql(f"""
                     UPDATE distribution_history 
@@ -196,7 +208,6 @@ Pukul:
                     WHERE id = (SELECT id FROM distribution_history ORDER BY id DESC LIMIT 1)
                 """)
             
-            # Broadcast WA Air Berhenti
             users = pd.read_sql("SELECT * FROM users", engine)
             pesan_berhenti = f"""🚰 INFORMASI DISTRIBUSI AIR
 
@@ -208,8 +219,13 @@ Pukul:
             for _, user in users.iterrows():
                 kirim_whatsapp(user["nomor_wa"], pesan_berhenti)
 
+        # 4. KIRIM JAWABAN BALIK KE ESP32
+        # Ini yang akan ditangkap oleh http.getString() di Serial Monitor ESP32
+        pesan_status = "Air Mengalir" if status == 1 else "Pipa Kosong"
         return jsonify({
-            "message": "data tersimpan"
+            "message": "Data berhasil diproses ML",
+            "prediksi_status": status,
+            "keterangan": pesan_status
         })
 
     except Exception as e:
@@ -340,8 +356,10 @@ def send_warning():
 # ======================================
 @app.route('/')
 def home():
+    status_ml = "Aktif" if MODEL_SIAP else "Error/Belum Dimuat"
     return jsonify({
-        "message": "Backend aktif"
+        "message": "Backend Early Warning System Aktif",
+        "status_machine_learning": status_ml
     })
 
 # ======================================
