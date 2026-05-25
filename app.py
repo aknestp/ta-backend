@@ -16,7 +16,7 @@ CORS(app)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 FONNTE_TOKEN = os.getenv("FONNTE_TOKEN")
-TARGET_GRUP = "Informasi distribusi air" # Ganti dengan Nama Grup atau ID Grup WA
+TARGET_GRUP = "120363408496098642@g.us" # Ganti dengan Nama Grup atau ID Grup WA
 
 engine = create_engine(DATABASE_URL)
 
