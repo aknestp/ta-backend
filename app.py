@@ -108,9 +108,25 @@ def dataset():
                     pd.DataFrame([{"tanggal": now_wib.date(), "jam_mulai": now_wib.strftime("%H:%M:%S"), "jam_selesai": "-", "durasi": "-", "status": "Mengalir"}]).to_sql("distribution_history", engine, if_exists="append", index=False)
 
         elif status == 0 and not hist.empty and hist.iloc[0]['status'] == "Mengalir": # AIR BERHENTI
+            jam_selesai_sekarang = now_wib.strftime("%H:%M:%S")
+            
+            # HITUNG DURASI
+            fmt = "%H:%M:%S"
+            mulai = datetime.strptime(hist.iloc[0]['jam_mulai'], fmt)
+            selesai = datetime.strptime(jam_selesai_sekarang, fmt)
+            durasi_detik = (selesai - mulai).total_seconds()
+            # Mengonversi detik ke format HH:MM:SS
+            durasi_str = str(pd.to_timedelta(durasi_detik, unit='s')).split()[-1] 
+            
             with engine.begin() as conn:
-                conn.execute(text(f"UPDATE distribution_history SET jam_selesai = '{now_wib.strftime('%H:%M:%S')}', status = 'Selesai' WHERE id = {hist.iloc[0]['id']}"))
-
+                conn.execute(text(f"""
+                    UPDATE distribution_history 
+                    SET jam_selesai = '{jam_selesai_sekarang}', 
+                        durasi = '{durasi_str}', 
+                        status = 'Selesai' 
+                    WHERE id = {hist.iloc[0]['id']}
+                """))
+                
         # 4. AUTO CLEANUP (LIMIT 10.000)
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM sensor_data WHERE id NOT IN (SELECT id FROM sensor_data ORDER BY id DESC LIMIT 10000)"))
