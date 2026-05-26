@@ -16,16 +16,15 @@ CORS(app)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 FONNTE_TOKEN = os.getenv("FONNTE_TOKEN")
-TARGET_GRUP = "120363408496098642@g.us" # Ganti dengan Nama Grup atau ID Grup WA
+TARGET_GRUP = "120363408496098642@g.us" 
 
 engine = create_engine(DATABASE_URL)
 
 # ======================================
 # LOAD MACHINE LEARNING MODEL
 # ======================================
-# Memuat model Random Forest atau SVM yang sudah kamu latih
 try:
-    model_ml = joblib.load('model_rf.pkl') # Sesuaikan dengan nama file modelmu
+    model_ml = joblib.load('model_rf.pkl') 
     MODEL_SIAP = True
     print("Model Machine Learning berhasil dimuat!")
 except Exception as e:
@@ -60,7 +59,6 @@ def create_tables():
             status VARCHAR(20)
         );
         """)
-        # Catatan: Tabel 'users' sudah dihapus dari sini karena kita menggunakan Grup WA
 
 create_tables()
 
@@ -188,6 +186,17 @@ Pukul: {jam_selesai_sekarang} WIB
 """
             kirim_whatsapp(TARGET_GRUP, pesan_berhenti)
 
+        # =========================
+        # 4. AUTO CLEANUP (MENCEGAH DATABASE PENUH)
+        # =========================
+        with engine.begin() as conn:
+            conn.exec_driver_sql("""
+                DELETE FROM sensor_data 
+                WHERE id NOT IN (
+                    SELECT id FROM sensor_data ORDER BY id DESC LIMIT 10000
+                )
+            """)
+
         # RESPONS KE ESP32
         pesan_status = "Air Mengalir" if status == 1 else "Pipa Kosong"
         return jsonify({
@@ -249,7 +258,7 @@ def history():
         return jsonify([])
 
 # ======================================
-# SEND WARNING (MANUAL)
+# SEND WARNING (MANUAL DARI STREAMLIT)
 # ======================================
 @app.route('/send_warning', methods=['POST'])
 def send_warning():
@@ -269,7 +278,8 @@ def home():
     status_ml = "Aktif" if MODEL_SIAP else "Error/Belum Dimuat"
     return jsonify({
         "message": "Backend Early Warning System Aktif",
-        "status_machine_learning": status_ml
+        "status_machine_learning": status_ml,
+        "database_limit": "10000 records max"
     })
 
 if __name__ == '__main__':
