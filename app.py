@@ -95,7 +95,7 @@ def dataset():
                     try:
                         last_dt = datetime.strptime(f"{last_tgl} {last_jam}", "%Y-%m-%d %H:%M:%S")
                         last_dt = tz_wib.localize(last_dt)
-                        if (now_wib - last_dt).total_seconds() <= 300:
+                        if (now_wib - last_dt).total_seconds() <= 120:
                             is_flicker = True
                     except: pass
                 
