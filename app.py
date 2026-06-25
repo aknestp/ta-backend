@@ -103,7 +103,7 @@ def dataset():
                     with engine.begin() as conn:
                         conn.execute(text(f"UPDATE distribution_history SET jam_selesai = '-', status = 'Mengalir' WHERE id = {hist.iloc[0]['id']}"))
                 else:
-                    pesan = f"🚰 INFORMASI DISTRIBUSI AIR\n\nAir mengalir di Desa Lubuk Raman.\n{now_wib.strftime('%A, %H:%M:%S')} WIB"
+                    pesan = f"🚰 INFORMASI DISTRIBUSI AIR\n\nAir mulai mengalir di Desa Lubuk Raman.\n{now_wib.strftime('%A, %H:%M:%S')} WIB. \n Pantau Distribusi: https://dashboard-serverair.up.railway.app/"
                     kirim_whatsapp(TARGET_GRUP, pesan)
                     pd.DataFrame([{"tanggal": now_wib.date(), "jam_mulai": now_wib.strftime("%H:%M:%S"), "jam_selesai": "-", "durasi": "-", "status": "Mengalir"}]).to_sql("distribution_history", engine, if_exists="append", index=False)
 
