@@ -24,7 +24,7 @@ engine = create_engine(DATABASE_URL)
 # LOAD MACHINE LEARNING MODEL
 # ======================================
 try:
-    model_ml = joblib.load('model_rf (1).pkl') 
+    model_ml = joblib.load('model_rf.pkl') 
     MODEL_SIAP = True
     print("Model Machine Learning berhasil dimuat!")
 except Exception as e:
@@ -66,7 +66,7 @@ def kirim_whatsapp(target, pesan):
 status_stabil = 0          # Status yang digunakan sistem
 counter_0 = 0
 counter_1 = 0
-BATAS_KONFIRMASI = 3
+BATAS_KONFIRMASI = 2
 
 # ======================================
 # MAIN LOGIC: DATASET & ML
