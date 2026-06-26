@@ -60,13 +60,6 @@ def kirim_whatsapp(target, pesan):
     except Exception as e:
         print(f"Gagal kirim WA: {e}")
         
-# ======================================
-# STABILISASI PREDIKSI
-# ======================================
-status_stabil = 0          # Status yang digunakan sistem
-counter_0 = 0
-counter_1 = 0
-BATAS_KONFIRMASI = 2
 
 # ======================================
 # MAIN LOGIC: DATASET & ML
@@ -79,20 +72,10 @@ def dataset():
         mean, rms = float(data.get("mean", 0)), float(data.get("rms", 0))
 
         # 1. PREDIKSI ML
-        prediksi = int(model_ml.predict([[ax, ay, az, mean, rms]])[0]) if MODEL_SIAP else 0
+        print("INPUT :", ax, ay, az, mean, rms)
+        print("PROBA :", model_ml.predict_proba([[ax, ay, az, mean, rms]]))
 
-        global status_stabil, counter_0, counter_1
-        if prediksi == 1:
-            counter_1 += 1
-            counter_0 = 0
-            if counter_1 >= BATAS_KONFIRMASI:
-                status_stabil = 1
-        else:
-            counter_0 += 1
-            counter_1 = 0
-            if counter_0 >= BATAS_KONFIRMASI:
-                status_stabil = 0
-        status = status_stabil
+        status = int(model_ml.predict([[ax, ay, az, mean, rms]])[0])
 
         tz_wib = pytz.timezone('Asia/Jakarta')
         now_wib = datetime.now(tz_wib)
