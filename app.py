@@ -72,9 +72,7 @@ def dataset():
         mean, rms = float(data.get("mean", 0)), float(data.get("rms", 0))
 
         # 1. PREDIKSI ML
-        print(model_ml.predict_proba([[0.41, 0.15, 10.88, 10.89, 10.89]]))
-
-        status = int(model_ml.predict([[ax, ay, az, mean, rms]])[0])
+        status = int(model_ml.predict([[ax, ay, az, mean, rms]])[0]) if MODEL_SIAP else 0
 
         tz_wib = pytz.timezone('Asia/Jakarta')
         now_wib = datetime.now(tz_wib)
