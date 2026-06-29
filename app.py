@@ -88,7 +88,7 @@ def dataset():
 
         if status == 1: # AIR MENGALIR
             if hist.empty or hist.iloc[0]['status'] == "Selesai":
-                # CEK FLICKER (Jika mati < 5 menit, buka sesi lama)
+                # CEK FLICKER (Jika mati < 2 menit, buka sesi lama)
                 is_flicker = False
                 if not hist.empty and hist.iloc[0]['status'] == "Selesai":
                     last_jam = hist.iloc[0]['jam_selesai']
