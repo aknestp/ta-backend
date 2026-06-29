@@ -24,7 +24,7 @@ engine = create_engine(DATABASE_URL)
 # LOAD MACHINE LEARNING MODEL
 # ======================================
 try:
-    model_ml = joblib.load('model_rf (1).pkl') 
+    model_ml = joblib.load('model_rf.pkl') 
     MODEL_SIAP = True
     print("Model Machine Learning berhasil dimuat!")
 except Exception as e:
