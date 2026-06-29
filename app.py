@@ -104,7 +104,25 @@ def dataset():
                     with engine.begin() as conn:
                         conn.execute(text(f"UPDATE distribution_history SET jam_selesai = '-', status = 'Mengalir' WHERE id = {hist.iloc[0]['id']}"))
                 else:
-                    pesan = f"🚰 INFORMASI DISTRIBUSI AIR\n\nAir mulai mengalir di Desa Lubuk Raman.\n{now_wib.strftime('%A, %H:%M:%S')} WIB. \n Pantau Distribusi: https://dashboard-serverair.up.railway.app/"
+                   # terjemahan hari dan bulan
+                    nama_hari = {"Monday": "Senin", "Tuesday": "Selasa", "Wednesday": "Rabu", "Thursday": "Kamis", "Friday": "Jumat", "Saturday": "Sabtu", "Sunday": "Minggu"}
+                    nama_bulan = {1: "Januari", 2: "Februari", 3: "Maret", 4: "April", 5: "Mei", 6: "Juni", 7: "Juli", 8: "Agustus", 9: "September", 10: "Oktober", 11: "November", 12: "Desember"}
+                    
+                    # Ambil komponen waktu dari variabel now_wib
+                    hari_en = now_wib.strftime("%A")
+                    hari_id = nama_hari.get(hari_en, hari_en)
+                    tanggal = now_wib.day
+                    bulan_id = nama_bulan.get(now_wib.month, now_wib.strftime("%B"))
+                    tahun = now_wib.year
+                    jam = now_wib.strftime("%H:%M:%S")
+                    
+                    pesan = (
+                        f"🚰 INFORMASI DISTRIBUSI AIR\n\n"
+                        f"Air mulai mengalir di Desa Lubuk Raman.\n\n"
+                        f"🗓️ Hari/Tanggal : {hari_id}, {tanggal} {bulan_id} {tahun}\n"
+                        f"⏰ Jam          : {jam} WIB\n\n"
+                        f"Pantau Distribusi Realtime:\n"
+                        f"🌐 https://dashboard-serverair.up.railway.app/")
                     kirim_whatsapp(TARGET_GRUP, pesan)
                     pd.DataFrame([{"tanggal": now_wib.date(), "jam_mulai": now_wib.strftime("%H:%M:%S"), "jam_selesai": "-", "durasi": "-", "status": "Mengalir"}]).to_sql("distribution_history", engine, if_exists="append", index=False)
 
