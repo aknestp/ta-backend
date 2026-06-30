@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 import pytz
 import joblib
+from threading import Thread
 
 # ======================================
 # CONFIG
@@ -123,9 +124,9 @@ def dataset():
                         f"⏰ Jam          : {jam} WIB\n\n"
                         f"Pantau Distribusi Realtime:\n"
                         f"🌐 https://dashboard-serverair.up.railway.app/")
-                    kirim_whatsapp(TARGET_GRUP, pesan)
                     pd.DataFrame([{"tanggal": now_wib.date(), "jam_mulai": now_wib.strftime("%H:%M:%S"), "jam_selesai": "-", "durasi": "-", "status": "Mengalir"}]).to_sql("distribution_history", engine, if_exists="append", index=False)
-
+                    Thread(target=kirim_whatsapp, args=(TARGET_GRUP, pesan), daemon=True).start()
+                    
         elif status == 0 and not hist.empty and hist.iloc[0]['status'] == "Mengalir": # AIR BERHENTI
             jam_selesai_sekarang = now_wib.strftime("%H:%M:%S")
             
