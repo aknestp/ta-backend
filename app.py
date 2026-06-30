@@ -149,7 +149,7 @@ def dataset():
                 
         # 4. AUTO CLEANUP (LIMIT 10.000)
         with engine.begin() as conn:
-            conn.execute(text("DELETE FROM sensor_data WHERE id NOT IN (SELECT id FROM sensor_data ORDER BY id DESC LIMIT 10000)"))
+            conn.execute(text("DELETE FROM sensor_data WHERE id NOT IN (SELECT id FROM sensor_data ORDER BY id DESC LIMIT 50000)"))
 
         return jsonify({"message": "OK", "status": status})
     except Exception as e: return jsonify({"error": str(e)}), 500
